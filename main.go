@@ -1,6 +1,7 @@
 package main
 
+import "go-spider/tujidao"
 
 func main()  {
-	TujidaoSpider()
+	tujidao.TujidaoSpider()
 }
