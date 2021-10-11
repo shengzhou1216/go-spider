@@ -105,7 +105,7 @@ func hint() {
 }
 
 
-func TujidaoSpiderRun() {
+func TujidaoSpider() {
 	client := &http.Client{}
 	tags, _ := getTagsAndCategories(client)
 	for {
