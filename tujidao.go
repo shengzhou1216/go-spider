@@ -17,6 +17,7 @@ const (
 	albumImageBaseUrlFormat = "https://tjg.gzhuibei.com/a/1/%d/%d.jpg"
 	cookie                  = "UM_distinctid=17c693cc8ee4fe-0cee9e41dd4ec6-b7a1b38-144000-17c693cc8ef49b; PHPSESSID=3vioa1ieltdv1t0kje0meduuko; uid=229195; name=asdf0823; leixing=3; CNZZDATA1257039673=314412289-1633858333-%7C1633872601"
 	imagesBaseDir           = "images"
+	Hint                    = "选择标签(T/t)选择页码(P/p),下载(D/d{page})"
 )
 
 type Tag struct {
@@ -34,6 +35,7 @@ type Album struct {
 	Id           int
 	User         User
 	Organization Organization
+	SourceTag    Tag
 }
 
 // User 人物
@@ -57,14 +59,17 @@ type Category struct {
 func chooseTag(tags []Tag) Tag {
 	log.Println("可选标签如下: ")
 	for ix, tag := range tags {
-		log.Printf("(%d)%s", ix+1, tag.Name)
+		if ix%10 == 0 {
+			log.Println()
+		}
+		fmt.Print(fmt.Sprintf("(%d)%s |", ix+1, tag.Name))
 	}
 	tagIndex := 0
 	log.Println("请选择一个tag(序号): ")
 	for {
 		_, err := fmt.Scanln(&tagIndex)
 		if err != nil {
-			log.Println(err)
+			log.Printf("无效输入:%v，请重新输入", err)
 			continue
 		}
 		if tagIndex < 1 || tagIndex > len(tags) {
@@ -94,6 +99,12 @@ func choosePage(pages int) int {
 	return page
 }
 
+func hint() {
+	log.Println()
+	log.Println(Hint)
+}
+
+
 func TujidaoSpiderRun() {
 	client := &http.Client{}
 	tags, _ := getTagsAndCategories(client)
@@ -107,8 +118,9 @@ func TujidaoSpiderRun() {
 			log.Println("此标签中没有数据，请重新选择标签")
 			continue
 		}
-		log.Printf("此标签下共有%d页\n", pages)
+	ChoosePage:
 		// 选择page
+		log.Printf("标签【%s】下共有%d页\n", tag.Name, pages)
 		page := choosePage(pages)
 	AfterChoosePage:
 		log.Printf("第%d页中的相册如下: ", page)
@@ -126,7 +138,7 @@ func TujidaoSpiderRun() {
 			log.Println(err)
 			continue
 		}
-		re := regexp.MustCompile(`D(\d*)`)
+		re := regexp.MustCompile(`[D|d](\d*)`)
 		if re.Match([]byte(cmd)) {
 			// 下载
 			matchs := re.FindSubmatch([]byte(cmd))
@@ -174,6 +186,9 @@ func TujidaoSpiderRun() {
 			// 下载相册
 			downloader.Start()
 			downloader.Result()
+
+			// 回到选择page
+			goto ChoosePage
 		}
 	}
 }
@@ -235,8 +250,9 @@ func (t *Tag) listAlbums(client *http.Client, url string) (albums []Album) {
 			}
 
 			album := Album{
-				Id:    int(idd),
-				Count: int(count),
+				Id:        int(idd),
+				Count:     int(count),
+				SourceTag: *t,
 			}
 
 			li.Find("p").Each(func(j int, p *goquery.Selection) {
@@ -322,7 +338,7 @@ func (t *Tag) PageUrl(page int) string {
 }
 
 func (a Album) LocalDir() (dir string, err error) {
-	dir = path.Join(imagesBaseDir, fmt.Sprintf("%s(%d)", a.Title, a.Count))
+	dir = path.Join(imagesBaseDir, a.SourceTag.Name, fmt.Sprintf("%s(%d)", a.Title, a.Count))
 	if _, err = os.Stat(dir); os.IsNotExist(err) {
 		if err = os.MkdirAll(dir, 0755); err != nil {
 			return

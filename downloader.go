@@ -135,6 +135,5 @@ func (d *Downloader) execute(done chan int, task *DownloadTask) {
 }
 
 func (d *Downloader) Result() {
-	fmt.Println("任务总耗时:", d.EndAt.Sub(d.StartAt))
-	fmt.Println("成功数量:", d.Success, " 失败数量：", d.Fail)
+	log.Println("成功数量:", d.Success, " 失败数量：", d.Fail, "任务总耗时:", d.EndAt.Sub(d.StartAt))
 }
