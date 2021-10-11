@@ -19,10 +19,6 @@ const (
 	imagesBaseDir           = "images"
 )
 
-type Chooser interface {
-	Choose() string
-}
-
 type Tag struct {
 	Name  string
 	Url   string
@@ -57,54 +53,129 @@ type Category struct {
 	Url  string
 }
 
+// 选择标签
+func chooseTag(tags []Tag) Tag {
+	log.Println("可选标签如下: ")
+	for ix, tag := range tags {
+		log.Printf("(%d)%s", ix+1, tag.Name)
+	}
+	tagIndex := 0
+	log.Println("请选择一个tag(序号): ")
+	for {
+		_, err := fmt.Scanln(&tagIndex)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+		if tagIndex < 1 || tagIndex > len(tags) {
+			log.Println("超出范围了，请重新选择标签。")
+			continue
+		}
+		break
+	}
+	return tags[tagIndex-1]
+}
+
+func choosePage(pages int) int {
+	var page int
+	for {
+		log.Println("请输入要查看的页码：")
+		if _, err := fmt.Scanln(&page); err != nil {
+			log.Println("无效页码！请重新输入")
+			continue
+		}
+		if page < 1 || page > pages {
+			log.Printf("请输入1-%d范围内的数字", pages)
+			continue
+		}
+		break
+	}
+	log.Printf("第%d页中的相册如下: ", page)
+	return page
+}
+
 func TujidaoSpiderRun() {
 	client := &http.Client{}
 	tags, _ := getTagsAndCategories(client)
-	fmt.Println("共获取到如下tag:")
-	for ix, tag := range tags {
-		if ix > 0 && ix%10 == 0 {
-			fmt.Println()
+	for {
+		// 选择tag
+		tag := chooseTag(tags)
+		log.Printf("你选择的标签是:%s", tag.Name)
+		// 获取tag下的页数
+		pages := tag.getPages(client)
+		if pages == 0 {
+			log.Println("此标签中没有数据，请重新选择标签")
+			continue
 		}
-		fmt.Printf("(%d)%s | ", ix+1, tag.Name)
-	}
-	tagIndex := 0
-	fmt.Println("\n请选择一个tag(序号): ")
-	_, err := fmt.Scanln(&tagIndex)
-	if err != nil {
-		log.Fatal(err)
-	}
-	// 获取tag下的页数
-	tag := tags[tagIndex-1]
-	fmt.Println("你选择的标签是:", tag.Name)
-	pages := tag.getPages(client)
-	if pages == 0 {
-		fmt.Println("此标签中没有数据。")
-		return
-	}
-	fmt.Printf("此标签下共有%d页\n", pages)
-	fmt.Println("第一页相册: ")
-	// 获取第一页的相册
-	albums := tag.listAlbums(client, tag.Url)
-	for ix, a := range albums {
-		fmt.Printf("(%d)%s(%d) \n", ix+1, a.Title, a.Count)
-	}
-	fmt.Println("请输入要下载的页码： ")
-	downloadPage := 0
-	if _, err := fmt.Scanln(&downloadPage); err != nil {
-		log.Fatal(err)
-	}
-	// 初始化下载器
-	downloader := NewDownloader()
-	downloadAlbums := tag.listAlbums(client, tag.PageUrl(downloadPage))
-	// 添加任务
-	for _, a := range downloadAlbums {
-		if err := AddAlbumTask(&downloader, &a); err != nil {
-			log.Fatal(err)
+		log.Printf("此标签下共有%d页\n", pages)
+		// 选择page
+		page := choosePage(pages)
+	AfterChoosePage:
+		log.Printf("第%d页中的相册如下: ", page)
+		// 列出相册
+		albums := tag.listAlbums(client, tag.PageUrl(page))
+		for ix, a := range albums {
+			log.Printf("(%d)%s(%d)", ix+1, a.Title, a.Count)
+		}
+	ChoosePageOrDownload:
+		log.Println("下载此页请输入D.要下载指定页请输入DP，其中P为页码；如D1，表示下载第1页。输入数字可切换页码")
+		var cmd string
+		var downloadPage int
+		var isDownload bool
+		if _, err := fmt.Scanln(&cmd); err != nil {
+			log.Println(err)
+			continue
+		}
+		re := regexp.MustCompile(`D(\d*)`)
+		if re.Match([]byte(cmd)) {
+			// 下载
+			matchs := re.FindSubmatch([]byte(cmd))
+			sp := matchs[1]
+			if len(sp) == 0 {
+				// 下载当前页
+				downloadPage = page
+			} else {
+				if p, err := strconv.ParseInt(string(sp), 10, 0); err != nil {
+					log.Println(err)
+					goto ChoosePageOrDownload
+				} else {
+					if p < 1 || int(p) > pages {
+						log.Println("无效页码，请重新输入")
+						goto ChoosePageOrDownload
+					} else {
+						// download
+						downloadPage = int(p)
+					}
+				}
+			}
+
+			isDownload = true
+		} else {
+			// 页码
+			if p, err := strconv.ParseInt(cmd, 10, 0); err != nil {
+				log.Println(err)
+				goto ChoosePageOrDownload
+			} else {
+				page = int(p)
+				goto AfterChoosePage
+			}
+		}
+		if isDownload {
+			// 初始化下载器
+			downloader := NewDownloader()
+			downloadAlbums := tag.listAlbums(client, tag.PageUrl(downloadPage))
+			// 添加任务
+			for _, a := range downloadAlbums {
+				if err := AddAlbumTask(&downloader, &a); err != nil {
+					log.Println(err)
+					continue
+				}
+			}
+			// 下载相册
+			downloader.Start()
+			downloader.Result()
 		}
 	}
-	// 下载相册
-	downloader.Start()
-	downloader.Result()
 }
 
 // AddAlbumTask 将相册添加到任务中
@@ -167,6 +238,7 @@ func (t *Tag) listAlbums(client *http.Client, url string) (albums []Album) {
 				Id:    int(idd),
 				Count: int(count),
 			}
+
 			li.Find("p").Each(func(j int, p *goquery.Selection) {
 				name := p.Find("a").Text()
 				url, _ := p.Find("a").Attr("href")
@@ -210,7 +282,7 @@ func requestDocument(client *http.Client, url string, headers map[string]string)
 	if err != nil {
 		log.Fatal(err)
 	}
-	//fmt.Println(doc.Html())
+	//log.Println(doc.Html())
 	return
 }
 
@@ -250,9 +322,9 @@ func (t *Tag) PageUrl(page int) string {
 }
 
 func (a Album) LocalDir() (dir string, err error) {
-	dir = path.Join(imagesBaseDir, fmt.Sprintf("%s", a.Title))
+	dir = path.Join(imagesBaseDir, fmt.Sprintf("%s(%d)", a.Title, a.Count))
 	if _, err = os.Stat(dir); os.IsNotExist(err) {
-		if err = os.MkdirAll(dir, 0666); err != nil {
+		if err = os.MkdirAll(dir, 0755); err != nil {
 			return
 		}
 	}

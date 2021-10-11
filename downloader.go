@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"runtime/debug"
@@ -54,6 +55,7 @@ func (d *Downloader) Start() {
 	done := make(chan int)
 	defer close(done)
 	d.StartAt = time.Now()
+	log.Printf("开始执行任务，本次共有%d个任务\n", len(d.Tasks))
 	for i, task := range d.Tasks {
 		d.Processing++
 		go d.execute(done, task)
@@ -63,6 +65,7 @@ func (d *Downloader) Start() {
 	for sum > 0 {
 		<-done
 		sum--
+		log.Printf("剩余任务数-%d\n", sum)
 	}
 	d.EndAt = time.Now()
 }
@@ -94,7 +97,6 @@ func (d Downloader) checkError(err error, done chan int, task *DownloadTask) {
 
 // execute 执行任务
 func (d *Downloader) execute(done chan int, task *DownloadTask) {
-	fmt.Printf("Starting execute task-%d\n", task.ID)
 	task.Start = time.Now()
 	defer func() {
 		if msg := recover(); msg != nil {
@@ -132,7 +134,7 @@ func (d *Downloader) execute(done chan int, task *DownloadTask) {
 	done <- task.ID
 }
 
-func (d *Downloader) Result()  {
+func (d *Downloader) Result() {
 	fmt.Println("任务总耗时:", d.EndAt.Sub(d.StartAt))
-	fmt.Println("成功数量:",d.Success," 失败数量：",d.Fail)
+	fmt.Println("成功数量:", d.Success, " 失败数量：", d.Fail)
 }
