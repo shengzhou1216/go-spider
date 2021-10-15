@@ -1,3 +1,5 @@
 .idea
 images
 
+log*
+*.pprof
