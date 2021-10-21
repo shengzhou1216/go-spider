@@ -60,7 +60,8 @@ func (d *Downloader) Start() {
 	defer file.Close()
 	pprof.StartCPUProfile(file)
 	defer pprof.StopCPUProfile()
-	done := make(chan bool)
+	sum := len(d.Tasks)
+	done := make(chan bool, sum)
 	defer close(done)
 	d.StartAt = time.Now()
 	log.Printf("开始执行任务，本次共有%d个任务\n", len(d.Tasks))
@@ -69,7 +70,6 @@ func (d *Downloader) Start() {
 		go d.execute(done, task)
 		d.Tasks[i] = task
 	}
-	sum := len(d.Tasks)
 	// TODO: 任务越多，执行到后面越慢。最后一个任务一一直无法结束，一致等待。
 	for sum > 0 {
 		<-done
