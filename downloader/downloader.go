@@ -46,6 +46,7 @@ type Downloader struct {
 	DownloadSize float64
 }
 
+
 // NewDownloader 创建下载器
 func NewDownloader() Downloader {
 	return Downloader{
@@ -59,7 +60,7 @@ func (d *Downloader) Start() {
 	defer file.Close()
 	pprof.StartCPUProfile(file)
 	defer pprof.StopCPUProfile()
-	done := make(chan int)
+	done := make(chan bool)
 	defer close(done)
 	d.StartAt = time.Now()
 	log.Printf("开始执行任务，本次共有%d个任务\n", len(d.Tasks))
@@ -97,51 +98,56 @@ func (d *Downloader) AddTask(url, file string) (err error) {
 	return
 }
 
-func (d *Downloader) checkError(err error, done chan int, task *DownloadTask) {
-	task.Error = err
-	d.Fail++
-	d.Processing--
-	done <- task.ID
-}
+// func (d *Downloader) checkError(err error, done chan int, task *DownloadTask) {
+// 	task.Error = err
+// 	// d.Fail++
+// 	// d.Processing--
+// 	done <- task.ID
+// }
 
 // execute 执行任务
-func (d *Downloader) execute(done chan int, task *DownloadTask) {
+func (d Downloader) execute(done chan bool, task *DownloadTask) {
 	task.Start = time.Now()
 	defer func() {
 		if msg := recover(); msg != nil {
 			log.Println(msg, debug.Stack())
-			d.checkError(errors.New(fmt.Sprintf("%v", msg)), done, task)
+			task.Error = errors.New(fmt.Sprintf("%v", msg))
+			done <- false
 			return
 		}
 	}()
 	resp, err := d.Client.Do(task.Request)
 	if err != nil {
-		d.checkError(err, done, task)
+		task.Error = err
+		done <- false
 		return
 	}
 	defer resp.Body.Close()
 	task.Response = resp
 	file, err := os.OpenFile(task.File.Name, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
-		d.checkError(err, done, task)
+		task.Error = err
+		done <- false
 		return
 	}
-	if resp.StatusCode != http.StatusOK {
-		d.checkError(errors.New(resp.Status), done, task)
+	if !(resp.StatusCode >= 200 && resp.StatusCode <= 299) {
+		task.Error = errors.New(resp.Status)
+		done <- false
 		return
 	}
 	s, err := io.Copy(file, resp.Body)
 	if err != nil {
-		d.checkError(errors.New(resp.Status), done, task)
+		task.Error = errors.New(resp.Status)
+		done <- false
 		return
 	}
 	//size := resp.Header.Get("Content-Length")
 	task.Size = float64(s)
-	d.DownloadSize += task.Size
+	// d.DownloadSize += task.Size
 	task.End = time.Now()
-	d.Processing--
-	d.Success++
-	done <- task.ID
+	// d.Processing--
+	// d.Success++
+	done <- true
 }
 
 const statisticFile = "statistic.md"
@@ -149,6 +155,14 @@ const statisticFile = "statistic.md"
 func (d *Downloader) Result() {
 	taskCount := len(d.Tasks)
 	timeConsumption := d.EndAt.Sub(d.StartAt)
+		for _,t := range d.Tasks {
+		if t.Error != nil {
+			d.Fail++
+		} else {
+			d.DownloadSize += t.Size
+			d.Success++
+		}	
+	}
 	downloadSpeed := float64(int(d.DownloadSize)>>20) / (d.EndAt.Sub(d.StartAt).Seconds())
 	taskPerSec := float64(d.Success) / (d.EndAt.Sub(d.StartAt).Seconds())
 	log.Println("任务总数：", taskCount, "成功数量:", d.Success, " 失败数量：", d.Fail, "任务总耗时:", d.EndAt.Sub(d.StartAt),
