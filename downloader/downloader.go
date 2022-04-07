@@ -1,6 +1,7 @@
 package downloader
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go-spider/common"
@@ -8,30 +9,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime/debug"
 	"runtime/pprof"
+	"sync"
+	"syscall"
 	"time"
 )
-
-type File struct {
-	Type string
-	Name string
-	Size float64
-	Ext  string
-	Mime string
-}
-
-// DownloadTask 下载任务
-type DownloadTask struct {
-	ID    int
-	Start time.Time
-	End   time.Time
-	Url   string
-	File
-	Request  *http.Request
-	Response *http.Response
-	Error    error
-}
 
 // Downloader 下载器
 type Downloader struct {
@@ -41,42 +25,70 @@ type Downloader struct {
 	Fail         int // 失败数量
 	Processing   int // 处理中数量
 	Pending      int // 等待中数量
+	Finished     int // 结束的数量
 	StartAt      time.Time
 	EndAt        time.Time
 	DownloadSize float64
+	ctx          context.Context
+	cancel       func()
+	sigs         []os.Signal // 信号
+	wg           *sync.WaitGroup
 }
-
 
 // NewDownloader 创建下载器
 func NewDownloader() Downloader {
+	ctx, cancel := context.WithCancel(context.Background())
 	return Downloader{
 		Client: &http.Client{},
+		ctx:    ctx,
+		cancel: cancel,
+		sigs:   []os.Signal{os.Interrupt, syscall.SIGINT, syscall.SIGKILL},
+		wg:     &sync.WaitGroup{},
 	}
 }
 
-// Start 启动
-func (d *Downloader) Start() {
+func (d *Downloader) setupPprof(fn func()) {
 	file, _ := os.OpenFile("cpu.pprof", os.O_CREATE|os.O_RDWR, 0644)
 	defer file.Close()
 	pprof.StartCPUProfile(file)
 	defer pprof.StopCPUProfile()
-	sum := len(d.Tasks)
-	done := make(chan bool, sum)
-	defer close(done)
+	fn()
+}
+
+// 带性能监控
+func (d *Downloader) StartWitiPprof() {
+	d.setupPprof(d.Start)
+}
+
+// Start 启动
+func (d *Downloader) Start() {
+	// file, _ := os.OpenFile("cpu.pprof", os.O_CREATE|os.O_RDWR, 0644)
+	// defer file.Close()
+	// pprof.StartCPUProfile(file)
+	// defer pprof.StopCPUProfile()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, d.sigs...)
+	go func() {
+		select {
+		case <-sig:
+			d.cancel()
+		case <-d.ctx.Done():
+			d.cancel()
+		}
+	}()
 	d.StartAt = time.Now()
 	log.Printf("开始执行任务，本次共有%d个任务\n", len(d.Tasks))
+
 	for i, task := range d.Tasks {
 		d.Processing++
-		go d.execute(done, task)
+		d.wg.Add(1)
+		go func() {
+			d.execute(task)
+		}()
 		d.Tasks[i] = task
 	}
+	d.wg.Wait()
 	// TODO: 任务越多，执行到后面越慢。最后一个任务一一直无法结束，一致等待。
-	for sum > 0 {
-		<-done
-		sum--
-		fmt.Printf("\r剩余任务数:%d", sum)
-	}
-	fmt.Println()
 	d.EndAt = time.Now()
 }
 
@@ -105,41 +117,40 @@ func (d *Downloader) AddTask(url, file string) (err error) {
 // 	done <- task.ID
 // }
 
-// execute 执行任务
-func (d Downloader) execute(done chan bool, task *DownloadTask) {
+// execute 执行下载任务
+func (d Downloader) execute(task *DownloadTask) error {
+	log.Printf("完成进度:%d/%d\n", d.Finished, len(d.Tasks))
 	task.Start = time.Now()
 	defer func() {
+		d.wg.Done()
+		d.Finished++
 		if msg := recover(); msg != nil {
 			log.Println(msg, debug.Stack())
 			task.Error = errors.New(fmt.Sprintf("%v", msg))
-			done <- false
 			return
 		}
 	}()
+	task.Request.WithContext(d.ctx)
 	resp, err := d.Client.Do(task.Request)
 	if err != nil {
 		task.Error = err
-		done <- false
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	task.Response = resp
 	file, err := os.OpenFile(task.File.Name, os.O_RDWR|os.O_CREATE, 0666)
 	if err != nil {
 		task.Error = err
-		done <- false
-		return
+		return err
 	}
 	if !(resp.StatusCode >= 200 && resp.StatusCode <= 299) {
 		task.Error = errors.New(resp.Status)
-		done <- false
-		return
+		return errors.New(resp.Status)
 	}
 	s, err := io.Copy(file, resp.Body)
 	if err != nil {
 		task.Error = errors.New(resp.Status)
-		done <- false
-		return
+		return errors.New(resp.Status)
 	}
 	//size := resp.Header.Get("Content-Length")
 	task.Size = float64(s)
@@ -147,7 +158,7 @@ func (d Downloader) execute(done chan bool, task *DownloadTask) {
 	task.End = time.Now()
 	// d.Processing--
 	// d.Success++
-	done <- true
+	return nil
 }
 
 const statisticFile = "statistic.md"
@@ -155,13 +166,13 @@ const statisticFile = "statistic.md"
 func (d *Downloader) Result() {
 	taskCount := len(d.Tasks)
 	timeConsumption := d.EndAt.Sub(d.StartAt)
-		for _,t := range d.Tasks {
+	for _, t := range d.Tasks {
 		if t.Error != nil {
 			d.Fail++
 		} else {
 			d.DownloadSize += t.Size
 			d.Success++
-		}	
+		}
 	}
 	downloadSpeed := float64(int(d.DownloadSize)>>20) / (d.EndAt.Sub(d.StartAt).Seconds())
 	taskPerSec := float64(d.Success) / (d.EndAt.Sub(d.StartAt).Seconds())
