@@ -6,10 +6,13 @@ import (
 	"github.com/gocolly/colly/v2"
 	"github.com/gocolly/colly/v2/debug"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -119,6 +122,10 @@ func (c Course) find(collector *colly.Collector) {
 	collector.OnRequest(func(request *colly.Request) {
 		log.Printf("Visiting: %s\n", c.Url)
 	})
+	// Set error handler
+	collector.OnError(func(r *colly.Response, err error) {
+		fmt.Println("Request URL:", r.Request.URL, "failed with response:", r, "\nError:", err)
+	})
 	collector.Visit(c.Url)
 }
 
@@ -139,6 +146,10 @@ func (c Course) findSource(collector *colly.Collector, xpath, saveDir, url strin
 	})
 	collector.OnRequest(func(request *colly.Request) {
 		log.Printf("Visiting: %s\n", url)
+	})
+	// Set error handler
+	collector.OnError(func(r *colly.Response, err error) {
+		fmt.Println("Request URL:", r.Request.URL, "failed with response:", r, "\nError:", err)
 	})
 	collector.Visit(url)
 	wg.Wait()
@@ -178,7 +189,38 @@ func (c Course) downloadFile(collector *colly.Collector, dir, title, url string)
 	collector.OnRequest(func(request *colly.Request) {
 		log.Printf("Visiting: %s\n", url)
 	})
+	// Set error handler
+	collector.OnError(func(r *colly.Response, err error) {
+		fmt.Println("Request URL:", r.Request.URL, "failed with response:", r, "\nError:", err)
+	})
 	collector.Visit(url)
+}
+
+// reset invalid filename to valid
+func (c Course) resetFileName() {
+	filepath.WalkDir(c.dir(), func(p string, d fs.DirEntry, err error) error {
+		if !d.IsDir() {
+			name := d.Name()
+			oldName := p
+			base := path.Dir(p)
+			name = strings.ReplaceAll(name, ":", "-")
+			name = strings.ReplaceAll(name, "?", "-")
+			name = strings.ReplaceAll(name, ",", "-")
+			name = strings.ReplaceAll(name, "/", "-")
+			name = strings.ReplaceAll(name, "\\", "-")
+			name = strings.ReplaceAll(name, "<", "-")
+			name = strings.ReplaceAll(name, ">", "-")
+			name = strings.ReplaceAll(name, "|", "-")
+			name = strings.ReplaceAll(name, "\"", "-")
+			name = strings.ReplaceAll(name, "*", "-")
+			newName := path.Join(base, name)
+			err := os.Rename(oldName, newName)
+			if err != nil {
+				log.Println(err)
+			}
+		}
+		return err
+	})
 }
 
 func download(name, url string) error {
@@ -204,9 +246,15 @@ func download(name, url string) error {
 
 func main() {
 	c := colly.NewCollector(colly.Debugger(&debug.LogDebugger{}))
+	c.WithTransport(&http.Transport{
+		Proxy: http.ProxyURL(&url.URL{
+			Host: "localhost:7890",
+		}),
+	})
 	c.UserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36"
 	name := "Introduction To Algorithm"
 	homeUrl := "https://ocw.mit.edu/courses/6-006-introduction-to-algorithms-spring-2020/"
 	course := NewCourse(name, homeUrl, c)
 	course.find(c)
+	course.resetFileName()
 }
